@@ -9,7 +9,7 @@
       "name": "sketchvlm",
       "source": "./",
       "description": "Annotate images with SVG overlays planned by your Claude Code session",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "homepage": "https://github.com/mrbeandev/sketchvlm-plugin",
       "tags": ["vision", "annotation", "vlm", "sketch"]
     }

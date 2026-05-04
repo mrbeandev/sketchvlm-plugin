@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sketchvlm-plugin"
-version = "0.2.0"
+version = "0.3.0"
 description = "Annotate images with SVG overlays planned by your Claude Code session. Ships as a Claude Code plugin."
 readme = "README.md"
 requires-python = ">=3.10"

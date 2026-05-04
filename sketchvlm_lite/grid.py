@@ -23,7 +23,7 @@ class GridSpec:
     cell_px: int
     image_w: int
     image_h: int
-    origin: Origin = "bottom_left"
+    origin: Origin = "top_left"
 
     @property
     def total_w(self) -> int:
@@ -50,9 +50,13 @@ class GridSpec:
 
 def _pick_font(size: int) -> ImageFont.ImageFont:
     candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
         "/Library/Fonts/Arial.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
         "C:/Windows/Fonts/arial.ttf",
     ]
     for path in candidates:
@@ -70,18 +74,25 @@ def add_grid_overlay(
     min_cell_px: int = 20,
     max_cell_px: int = 80,
     label_step: int = 5,
-    margin_px: int = 56,
-    origin: Origin = "bottom_left",
+    origin: Origin = "top_left",
+    scale: int = 1,
 ) -> Tuple[Image.Image, GridSpec]:
     """Render a labeled coordinate grid over a copy of the image.
 
-    The grid is drawn directly on the image with tick labels along the left
-    (y axis) and bottom (x axis) margins, leaving the original image content
+    Light secondary tick lines are drawn every grid unit; heavier primary
+    lines and labels every `label_step` units. The labels live in margins
+    appended to the left and bottom edges; the original image content is left
     fully visible underneath.
+
+    `scale` multiplies both the image and the label sizes — set to 2 for a
+    higher-resolution gridded image when the grid is dense enough that labels
+    would otherwise be hard to read after viewer downscaling.
 
     Returns the gridded image (RGB) and a GridSpec describing the mapping.
     """
     img = image.convert("RGB").copy()
+    if scale != 1:
+        img = img.resize((img.width * scale, img.height * scale), Image.LANCZOS)
     w, h = img.size
 
     cell_w = max(min_cell_px, min(max_cell_px, w // max(1, target_cols)))
@@ -91,42 +102,54 @@ def add_grid_overlay(
     cols = max(1, w // cell)
     rows = max(1, h // cell)
 
+    label_size = max(12, int(cell * 0.7))
+    margin_px = max(56, label_size * 4)
+    font = _pick_font(label_size)
+
     canvas = Image.new("RGB", (w + margin_px, h + margin_px), color=(255, 255, 255))
     canvas.paste(img, (margin_px, 0))
 
     draw = ImageDraw.Draw(canvas, "RGBA")
-    font = _pick_font(max(10, cell // 2))
 
-    grid_color = (90, 90, 90, 110)
-    axis_color = (30, 30, 30, 220)
-    label_color = (30, 30, 30, 255)
+    minor_color = (160, 160, 160, 70)
+    major_color = (60, 60, 60, 160)
+    axis_color = (20, 20, 20, 230)
+    label_color = (15, 15, 15, 255)
 
     for c in range(cols + 1):
         x_px = margin_px + c * cell
-        draw.line([(x_px, 0), (x_px, h)], fill=grid_color, width=1)
-        if c % label_step == 0 and c <= cols:
-            label = f"x{c}"
-            draw.text((x_px + 2, h + 4), label, fill=label_color, font=font)
+        if c % label_step == 0:
+            draw.line([(x_px, 0), (x_px, h)], fill=major_color, width=2)
+            draw.text((x_px + 3, h + 4), f"x{c}", fill=label_color, font=font)
+        else:
+            draw.line([(x_px, 0), (x_px, h)], fill=minor_color, width=1)
 
     for r in range(rows + 1):
         y_px_top = r * cell
-        draw.line([(margin_px, y_px_top), (margin_px + w, y_px_top)], fill=grid_color, width=1)
-        if r % label_step == 0 and r <= rows:
-            if origin == "bottom_left":
-                label = f"y{rows - r}"
-            else:
-                label = f"y{r}"
-            draw.text((4, y_px_top + 2), label, fill=label_color, font=font)
+        if r % label_step == 0:
+            draw.line(
+                [(margin_px, y_px_top), (margin_px + w, y_px_top)],
+                fill=major_color,
+                width=2,
+            )
+            label_y = rows - r if origin == "bottom_left" else r
+            draw.text((6, y_px_top + 2), f"y{label_y}", fill=label_color, font=font)
+        else:
+            draw.line(
+                [(margin_px, y_px_top), (margin_px + w, y_px_top)],
+                fill=minor_color,
+                width=1,
+            )
 
-    draw.line([(margin_px, 0), (margin_px, h)], fill=axis_color, width=2)
-    draw.line([(margin_px, h), (margin_px + w, h)], fill=axis_color, width=2)
+    draw.line([(margin_px, 0), (margin_px, h)], fill=axis_color, width=3)
+    draw.line([(margin_px, h), (margin_px + w, h)], fill=axis_color, width=3)
 
     spec = GridSpec(
         cols=cols,
         rows=rows,
-        cell_px=cell,
-        image_w=w,
-        image_h=h,
+        cell_px=cell // scale if scale > 1 else cell,
+        image_w=image.width,
+        image_h=image.height,
         origin=origin,
     )
     return canvas, spec

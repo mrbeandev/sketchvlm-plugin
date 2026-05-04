@@ -1,7 +1,7 @@
 {
   "name": "sketchvlm",
-  "version": "0.2.0",
-  "description": "Annotate images with SVG overlays planned by your Claude Code session. No API key needed — uses the model already running your session.",
+  "version": "0.3.0",
+  "description": "Annotate images with SVG overlays planned by your Claude Code session. Preview-and-iterate workflow, pixel + grid coords, lines, curves, arrows, rectangles, circles, ellipses, text. No API key needed.",
   "author": {
     "name": "MrBeanDev"
   },

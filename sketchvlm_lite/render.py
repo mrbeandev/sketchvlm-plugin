@@ -19,12 +19,7 @@ _ARROW_MARKER_ID = "svlm-arrow"
 def _fit_cubic_bezier(points: List[Tuple[float, float]]) -> Tuple[
     Tuple[float, float], Tuple[float, float], Tuple[float, float], Tuple[float, float]
 ]:
-    """Fit a single cubic Bezier through `points` via least squares.
-
-    Endpoints P0 and P3 are clamped to the first and last data points.
-    The two interior control points P1 and P2 are solved for by minimising
-    the squared distance from the curve to the interior data points.
-    """
+    """Fit a single cubic Bezier through `points` via least squares."""
     pts = np.asarray(points, dtype=float)
     n = len(pts)
     if n < 2:
@@ -60,17 +55,32 @@ def _fit_cubic_bezier(points: List[Tuple[float, float]]) -> Tuple[
     return tuple(p0), tuple(p1), tuple(p2), tuple(p3)
 
 
+def _project(stroke: Stroke, grid: GridSpec, x: float, y: float) -> Tuple[float, float]:
+    """Project a stroke's coord into pixel space, respecting its coord space."""
+    if stroke.space == "pixel":
+        # Pixel coords come from the original-image space. If the stroke uses
+        # bottom-left origin we still flip y here.
+        py = (grid.image_h - y) if grid.origin == "bottom_left" else y
+        return float(x), float(py)
+    return grid.to_pixel(x, y)
+
+
+def _project_radius(stroke: Stroke, grid: GridSpec, r: float, axis: str = "x") -> float:
+    if stroke.space == "pixel":
+        return float(r)
+    if axis == "x":
+        return float(r) * grid.cell_px * (grid.image_w / max(1, grid.total_w))
+    return float(r) * grid.cell_px * (grid.image_h / max(1, grid.total_h))
+
+
 def _stroke_to_svg(stroke: Stroke, grid: GridSpec) -> str:
     color = stroke.color
     width = max(1, int(stroke.width))
 
-    def proj(x: float, y: float) -> Tuple[float, float]:
-        return grid.to_pixel(x, y)
-
     if stroke.kind == "TEXT":
         if stroke.x is None or stroke.y is None or stroke.text is None:
             return ""
-        px, py = proj(stroke.x, stroke.y)
+        px, py = _project(stroke, grid, stroke.x, stroke.y)
         size = stroke.size or 14
         return (
             f'<text x="{px:.2f}" y="{py:.2f}" fill="{color}" '
@@ -79,10 +89,31 @@ def _stroke_to_svg(stroke: Stroke, grid: GridSpec) -> str:
             f'{xml_escape(stroke.text)}</text>'
         )
 
+    if stroke.kind == "CIRCLE":
+        if stroke.cx is None or stroke.cy is None or stroke.r is None:
+            return ""
+        cx, cy = _project(stroke, grid, stroke.cx, stroke.cy)
+        r = _project_radius(stroke, grid, stroke.r, "x")
+        return (
+            f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" '
+            f'fill="none" stroke="{color}" stroke-width="{width}"/>'
+        )
+
+    if stroke.kind == "ELLIPSE":
+        if stroke.cx is None or stroke.cy is None or stroke.rx is None or stroke.ry is None:
+            return ""
+        cx, cy = _project(stroke, grid, stroke.cx, stroke.cy)
+        rx = _project_radius(stroke, grid, stroke.rx, "x")
+        ry = _project_radius(stroke, grid, stroke.ry, "y")
+        return (
+            f'<ellipse cx="{cx:.2f}" cy="{cy:.2f}" rx="{rx:.2f}" ry="{ry:.2f}" '
+            f'fill="none" stroke="{color}" stroke-width="{width}"/>'
+        )
+
     if not stroke.points:
         return ""
 
-    pts_px = [proj(x, y) for x, y in stroke.points]
+    pts_px = [_project(stroke, grid, x, y) for x, y in stroke.points]
 
     if stroke.kind == "RECT":
         (x0, y0), (x1, y1) = pts_px[0], pts_px[1]
@@ -96,10 +127,10 @@ def _stroke_to_svg(stroke: Stroke, grid: GridSpec) -> str:
 
     if stroke.kind in ("LINE", "ARROW") and len(pts_px) >= 2:
         (x0, y0), (x1, y1) = pts_px[0], pts_px[1]
-        marker_attr = f' marker-end="url(#{_ARROW_MARKER_ID})"' if stroke.kind == "ARROW" else ""
+        marker = f' marker-end="url(#{_ARROW_MARKER_ID})"' if stroke.kind == "ARROW" else ""
         return (
             f'<line x1="{x0:.2f}" y1="{y0:.2f}" x2="{x1:.2f}" y2="{y1:.2f}" '
-            f'stroke="{color}" stroke-width="{width}" stroke-linecap="round"{marker_attr}/>'
+            f'stroke="{color}" stroke-width="{width}" stroke-linecap="round"{marker}/>'
         )
 
     if stroke.kind == "CURVE":
