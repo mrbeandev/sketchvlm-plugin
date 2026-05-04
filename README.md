@@ -1,6 +1,8 @@
 # sketchvlm-plugin
 
-A Claude Code plugin that lets a vision-language model **draw on your image** while answering a question about it. Drop in a maze, a screenshot, a chart, or any photo, ask a visual-reasoning question, and get back the answer plus an SVG overlay that shows you *where* and *how* the model arrived at it.
+A Claude Code plugin that lets your **current** Claude session draw on images while answering questions about them. Drop in a maze, a screenshot, a chart, or any photo, ask a visual-reasoning question, and get back the answer plus an SVG overlay that shows you *where* and *how* the model arrived at it.
+
+**No API key. No extra billing.** The host model running your Claude Code session does the vision and the stroke planning — this plugin only ships the deterministic grid overlay and SVG rendering tools that turn the model's coordinate output into a real annotated image.
 
 Implements the technique from the **SketchVLM** paper (Collins et al., 2026, [arXiv:2604.22875](https://arxiv.org/abs/2604.22875), CC BY 4.0). This is an independent implementation written from the paper; it does not bundle or depend on the original research codebase.
 
@@ -9,11 +11,11 @@ Implements the technique from the **SketchVLM** paper (Collins et al., 2026, [ar
 ## What you get
 
 - A `/sketchvlm:annotate` skill, plus a model-invokable skill that triggers automatically when you ask Claude to "annotate", "trace", "sketch on", "mark up", or "highlight" something on an image.
-- Two MCP tools:
-  - `sketch_annotate_inline(image_path, question)` — returns the annotated PNG inline in the chat.
-  - `sketch_annotate(image_path, question, save_dir=...)` — saves the annotated PNG and SVG to disk and returns the paths.
-- Bottom-left coordinate-grid overlay sent to the model, with the strokes composited cleanly onto the **original** image (the grid is never burned into the output).
-- Strokes supported: straight lines, smooth Bezier curves, arrows, rectangles, and text labels.
+- Two MCP tools — both are **pure deterministic Python** (no LLM calls inside):
+  - `prepare_image(image_path, ...)` — overlays a labeled coordinate grid on a copy of the image and returns the path so the host model can look at it with the built-in Read tool.
+  - `render_strokes(original_image_path, strokes_xml, grid_cols, grid_rows, ...)` — composites the model's stroke XML as an SVG over the original image and returns the annotated PNG.
+- Bottom-left coordinate grid by default (mathematician convention); flip to top-left for UI screenshots.
+- Strokes supported: straight lines, smooth Bezier curves, arrows, rectangles, and text labels. Multi-point curves are fitted with a single cubic Bezier via least-squares.
 
 ---
 
@@ -23,9 +25,10 @@ Implements the technique from the **SketchVLM** paper (Collins et al., 2026, [ar
 
 - Claude Code (latest)
 - [`uv`](https://docs.astral.sh/uv/) — used to run the MCP server in an isolated Python environment without polluting your system Python. Install with `curl -LsSf https://astral.sh/uv/install.sh | sh`.
-- An Anthropic API key exported as `ANTHROPIC_API_KEY`.
 
-### From this marketplace (recommended)
+That's it. **No API key needed.** The plugin uses the model already running your Claude Code session.
+
+### From the marketplace (recommended)
 
 In Claude Code:
 
@@ -34,7 +37,7 @@ In Claude Code:
 /plugin install sketchvlm@mrbeandev
 ```
 
-That's it. The first tool call will install the Python dependencies into a `uv`-managed environment automatically.
+The first tool call will install the Python dependencies into a `uv`-managed environment automatically.
 
 ### From a local clone (for development)
 
@@ -52,7 +55,7 @@ claude --plugin-dir .
 
 > Hey, can you annotate `examples/maze.png` and trace the shortest path from start to end?
 
-Claude will pick up the model-invokable skill, call `sketch_annotate_inline`, and reply with the answer text plus the annotated image inline.
+The skill activates, your current Claude session looks at the image, plans the strokes, calls `render_strokes`, and shows you the annotated PNG inline.
 
 ### From the slash command
 
@@ -60,42 +63,29 @@ Claude will pick up the model-invokable skill, call `sketch_annotate_inline`, an
 /sketchvlm:annotate examples/maze.png "trace the shortest path from start to end"
 ```
 
-### From your own Python (without the plugin)
+---
 
-```python
-import pathlib
-from sketchvlm_lite.pipeline import annotate
+## How it works
 
-img = pathlib.Path("examples/maze.png").read_bytes()
-result = annotate(img, "Trace the shortest path from start to end.")
+1. The skill tells Claude to call `prepare_image(path)`. The MCP server overlays a labeled coordinate grid (default 50×50, bottom-left origin) on a copy of the image and returns the path plus the coordinate ranges.
+2. Claude opens the gridded image with the built-in `Read` tool — it sees the image visually with the labeled axes.
+3. Claude plans one or more strokes (`LINE`, `CURVE`, `ARROW`, `RECT`, `TEXT`) using the grid coordinates, and writes them as XML tags.
+4. The skill calls `render_strokes(original_path, stroke_xml, grid_cols, grid_rows)`. The MCP server parses the strokes, fits multi-point curves to cubic Beziers, and alpha-composites the rendered SVG onto the **original** (non-gridded) image.
+5. The skill reads the annotated PNG back so it renders inline, and Claude states the answer.
 
-pathlib.Path("out.png").write_bytes(result["png"])
-print("Answer:", result["answer"])
-```
+The grid is the trick that makes vision-model coordinate references precise. Without it, models drift several percent of the image dimensions off target. With it, they can hit individual cells reliably.
 
 ---
 
 ## Configuration
 
-| Argument       | Default            | What it does                                                                  |
-| -------------- | ------------------ | ----------------------------------------------------------------------------- |
-| `model`        | `claude-opus-4-5`  | Any Anthropic vision model. Try `claude-sonnet-4-5` for a faster, cheaper run. |
-| `target_cols`  | `50`               | Coordinate-grid columns shown to the model.                                   |
-| `target_rows`  | `50`               | Coordinate-grid rows shown to the model.                                      |
-| `origin`       | `bottom_left`      | y-axis direction. Set to `top_left` for image-style coordinates.              |
-| `save_dir`     | `./sketchvlm-output` | Where the saved variant writes the PNG + SVG.                                |
-
----
-
-## How it works
-
-1. The input image gets a labeled coordinate grid (left + bottom margins, default 50×50, bottom-left origin).
-2. The gridded image is sent to the chosen Anthropic vision model with a strict output spec: emit `<sN type="...">x..y.. x..y..</sN>` stroke tags, then `<answer>...</answer>`.
-3. The model's response is parsed: stroke types `LINE` / `CURVE` / `ARROW` / `RECT` / `TEXT` plus the answer text.
-4. Each stroke is converted to SVG. Multi-point curves are fitted to a single cubic Bezier via least-squares, two-point strokes go straight to lines.
-5. The SVG is rasterised and alpha-composited over the **original** (non-gridded) image, then returned to you as a PNG.
-
-The grid is what makes coordinate references precise — without it, vision models tend to drift several percent of the image dimensions off target. With it, they can hit individual cells reliably.
+| Argument       | Default              | What it does                                                          |
+| -------------- | -------------------- | --------------------------------------------------------------------- |
+| `target_cols`  | `50`                 | Coordinate-grid columns shown to the model.                           |
+| `target_rows`  | `50`                 | Coordinate-grid rows shown to the model.                              |
+| `min_cell_px`  | `20`                 | Floor on cell size in pixels (the grid auto-coarsens for small images). |
+| `origin`       | `bottom_left`        | y-axis direction. Set to `top_left` for image / UI coordinates.       |
+| `save_dir`     | `./sketchvlm-output` | Where the gridded copy and the annotated PNG + SVG get written.       |
 
 ---
 
@@ -106,18 +96,16 @@ sketchvlm-plugin/
 ├── .claude-plugin/
 │   ├── plugin.json          # plugin manifest
 │   └── marketplace.json     # single-repo marketplace catalog
-├── .mcp.json                # MCP server registration
+├── .mcp.json                # MCP server registration (no API key)
 ├── server/
-│   └── mcp_server.py        # FastMCP server exposing the two tools
-├── sketchvlm_lite/          # the implementation
+│   └── mcp_server.py        # FastMCP server: prepare_image + render_strokes
+├── sketchvlm_lite/
 │   ├── grid.py              # coordinate-grid overlay
-│   ├── prompt.py            # system + user prompt templates
-│   ├── providers.py         # Anthropic vision client
+│   ├── prompt.py            # stroke-format spec
 │   ├── parser.py            # stroke + answer extractor
-│   ├── render.py            # Bezier fit, SVG render, composite
-│   └── pipeline.py          # annotate() end-to-end
-├── skills/annotate/SKILL.md # model-invokable skill
-├── examples/                # sample images
+│   └── render.py            # Bezier fit, SVG render, composite
+├── skills/annotate/SKILL.md # workflow the host Claude follows
+├── examples/                # sample maze + generator
 ├── requirements.txt
 ├── pyproject.toml
 ├── LICENSE                  # MIT
@@ -128,10 +116,10 @@ sketchvlm-plugin/
 
 ## Roadmap
 
-- [ ] OpenAI (`gpt-4o`, `gpt-5-vision`) and Gemini provider support
-- [ ] Multi-turn iterative refinement (paper's stepwise mode)
+- [ ] Multi-turn iterative refinement ("make the arrow red instead", "extend the path")
 - [ ] No-grid mode for models that prefer raw images
 - [ ] Custom palette + stroke-style overrides
+- [ ] Support for batched / multi-image annotation in a single call
 
 Issues and PRs welcome at [github.com/mrbeandev/sketchvlm-plugin](https://github.com/mrbeandev/sketchvlm-plugin).
 

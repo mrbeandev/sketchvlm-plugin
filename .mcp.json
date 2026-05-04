@@ -12,7 +12,6 @@
         "${CLAUDE_PLUGIN_ROOT}/server/mcp_server.py"
       ],
       "env": {
-        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
         "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}"
       }
     }

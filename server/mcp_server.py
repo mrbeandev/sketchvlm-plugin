@@ -1,28 +1,43 @@
-"""MCP server exposing the sketch-and-answer tool to Claude Code."""
+"""MCP server exposing deterministic grid + render helpers to Claude Code.
+
+This server does NOT call any LLM. It only does the non-vision work:
+  * `prepare_image`   — overlays a labeled coordinate grid for the host model
+                        to look at. Returns the gridded path plus the stroke
+                        format spec the model should follow.
+  * `render_strokes`  — takes the model's stroke XML and composites the
+                        rendered SVG onto the ORIGINAL image (no grid),
+                        returning the annotated PNG path.
+
+The host Claude Code session does the actual vision and stroke planning,
+billed against the user's existing Claude Code subscription. No API key.
+"""
 
 from __future__ import annotations
 
-import base64
-import os
 import pathlib
 import sys
 import time
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import FastMCP
 
 # Allow running directly via `python server/mcp_server.py` from the plugin root
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from sketchvlm_lite.pipeline import annotate as _annotate  # noqa: E402
+from PIL import Image  # noqa: E402
+
+from sketchvlm_lite.grid import add_grid_overlay  # noqa: E402
+from sketchvlm_lite.parser import parse_response  # noqa: E402
+from sketchvlm_lite.prompt import build_stroke_spec  # noqa: E402
+from sketchvlm_lite.render import render_strokes as _render  # noqa: E402
 
 
 mcp = FastMCP("sketchvlm")
 
 
-def _resolve_save_dir(save_dir: Optional[str]) -> pathlib.Path:
-    if save_dir:
-        target = pathlib.Path(save_dir).expanduser().resolve()
+def _output_dir(custom: Optional[str]) -> pathlib.Path:
+    if custom:
+        target = pathlib.Path(custom).expanduser().resolve()
     else:
         target = pathlib.Path.cwd() / "sketchvlm-output"
     target.mkdir(parents=True, exist_ok=True)
@@ -30,99 +45,130 @@ def _resolve_save_dir(save_dir: Optional[str]) -> pathlib.Path:
 
 
 @mcp.tool()
-def sketch_annotate(
+def prepare_image(
     image_path: str,
-    question: str,
-    model: str = "claude-opus-4-5",
-    save_dir: Optional[str] = None,
     target_cols: int = 50,
     target_rows: int = 50,
+    min_cell_px: int = 20,
     origin: str = "bottom_left",
+    save_dir: Optional[str] = None,
 ) -> dict:
-    """Annotate an image with overlay strokes that explain the answer to a question.
+    """Overlay a labeled coordinate grid on a copy of the image and return the path.
 
-    Sends the image plus the question to a vision-language model, asks the
-    model to draw on the image and answer in text, then renders the model's
-    strokes as an SVG overlay composited onto the original image.
+    Call this first. Then Read the returned `gridded_image_path` so you can see
+    the image visually with the coordinate axes labeled. Use those coordinates
+    when planning strokes, then pass the original (un-gridded) `image_path` to
+    `render_strokes` along with your stroke XML.
 
     Args:
-        image_path: Absolute or relative path to the input image (PNG / JPG).
-        question: Plain-English question about the image.
-        model: Anthropic vision model id. Defaults to claude-opus-4-5.
-        save_dir: Where to write the annotated PNG and SVG. Defaults to ./sketchvlm-output.
-        target_cols: Coordinate-grid columns the model sees (default 50).
-        target_rows: Coordinate-grid rows the model sees (default 50).
+        image_path: Absolute or relative path to the source image (PNG / JPG).
+        target_cols: Target number of grid columns (default 50).
+        target_rows: Target number of grid rows (default 50).
+        min_cell_px: Minimum cell size in pixels (default 20).
         origin: "bottom_left" (default) or "top_left" for the y axis direction.
+        save_dir: Where to write the gridded image (default ./sketchvlm-output).
 
     Returns:
-        A dict with the text answer, paths to the rendered files, and any parser warnings.
+        gridded_image_path: Path to the gridded image to Read.
+        original_image_path: Path to pass to `render_strokes` for compositing.
+        grid_cols, grid_rows: Coordinate ranges available to the model.
+        stroke_format_spec: Human-readable instructions to follow when emitting
+            stroke XML for `render_strokes`.
     """
     src = pathlib.Path(image_path).expanduser().resolve()
     if not src.exists():
         raise FileNotFoundError(f"Image not found: {src}")
 
-    image_bytes = src.read_bytes()
-
-    result = _annotate(
-        image_bytes=image_bytes,
-        question=question,
-        model=model,
+    img = Image.open(src).convert("RGB")
+    gridded, spec = add_grid_overlay(
+        img,
         target_cols=target_cols,
         target_rows=target_rows,
-        origin=origin,
+        min_cell_px=min_cell_px,
+        origin=origin,  # type: ignore[arg-type]
     )
 
-    out_dir = _resolve_save_dir(save_dir)
-    stem = f"{src.stem}_annotated_{int(time.time())}"
-    png_path = out_dir / f"{stem}.png"
-    svg_path = out_dir / f"{stem}.svg"
-
-    png_path.write_bytes(result["png"])
-    svg_path.write_text(result["svg"], encoding="utf-8")
+    out_dir = _output_dir(save_dir)
+    grid_path = out_dir / f"{src.stem}_grid_{int(time.time())}.png"
+    gridded.save(grid_path, format="PNG")
 
     return {
-        "answer": result["answer"],
-        "annotated_png": str(png_path),
-        "svg": str(svg_path),
-        "warnings": result["warnings"],
-        "model": model,
+        "gridded_image_path": str(grid_path),
+        "original_image_path": str(src),
+        "grid_cols": spec.cols,
+        "grid_rows": spec.rows,
+        "origin": spec.origin,
+        "stroke_format_spec": build_stroke_spec(spec),
     }
 
 
 @mcp.tool()
-def sketch_annotate_inline(
-    image_path: str,
-    question: str,
-    model: str = "claude-opus-4-5",
-) -> list:
-    """Same as `sketch_annotate` but returns the annotated image inline.
+def render_strokes(
+    original_image_path: str,
+    strokes_xml: str,
+    grid_cols: int,
+    grid_rows: int,
+    origin: str = "bottom_left",
+    save_dir: Optional[str] = None,
+) -> dict:
+    """Render stroke XML as an SVG overlay composited onto the original image.
 
-    Use this when the user wants to see the result immediately in the chat
-    rather than saving it to disk. Returns a list with the text answer
-    followed by the annotated image as an inline content block.
+    Pass the same `original_image_path` you got from `prepare_image`, plus the
+    stroke tags you produced. `grid_cols` and `grid_rows` MUST match what
+    `prepare_image` returned for this image so the coordinates project correctly.
+
+    Args:
+        original_image_path: The un-gridded source image to composite onto.
+        strokes_xml: The full XML stroke output you produced (one or more
+            <sN type=...> tags, optionally followed by an <answer> tag).
+        grid_cols: Coordinate-x range used when planning strokes.
+        grid_rows: Coordinate-y range used when planning strokes.
+        origin: Same value passed to `prepare_image`. Default "bottom_left".
+        save_dir: Where to save the outputs (default ./sketchvlm-output).
+
+    Returns:
+        annotated_png_path: The composited PNG with strokes overlaid.
+        svg_path: The standalone SVG overlay (transparent background).
+        answer: Text inside the <answer>...</answer> tag, if present.
+        stroke_count: How many strokes were rendered.
+        warnings: Any malformed strokes that were skipped.
     """
-    src = pathlib.Path(image_path).expanduser().resolve()
+    src = pathlib.Path(original_image_path).expanduser().resolve()
     if not src.exists():
         raise FileNotFoundError(f"Image not found: {src}")
 
-    image_bytes = src.read_bytes()
-    result = _annotate(
-        image_bytes=image_bytes,
-        question=question,
-        model=model,
+    img = Image.open(src).convert("RGB")
+    from sketchvlm_lite.grid import GridSpec
+
+    spec = GridSpec(
+        cols=grid_cols,
+        rows=grid_rows,
+        cell_px=max(1, img.width // max(1, grid_cols)),
+        image_w=img.width,
+        image_h=img.height,
+        origin=origin,  # type: ignore[arg-type]
     )
 
-    answer = result["answer"] or "(model returned no answer text)"
-    img = Image(data=result["png"], format="png")
-    return [f"Answer: {answer}", img]
+    parsed = parse_response(strokes_xml)
+    png_bytes, svg_text = _render(parsed.strokes, img, spec)
+
+    out_dir = _output_dir(save_dir)
+    stem = f"{src.stem}_annotated_{int(time.time())}"
+    png_path = out_dir / f"{stem}.png"
+    svg_path = out_dir / f"{stem}.svg"
+    png_path.write_bytes(png_bytes)
+    svg_path.write_text(svg_text, encoding="utf-8")
+
+    return {
+        "annotated_png_path": str(png_path),
+        "svg_path": str(svg_path),
+        "answer": parsed.answer,
+        "stroke_count": len(parsed.strokes),
+        "warnings": parsed.warnings,
+    }
 
 
 def main() -> None:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.stderr.write(
-            "[sketchvlm] ANTHROPIC_API_KEY is not set. The server will start "
-            "but tool calls will fail until the key is exported.\n"
-        )
     mcp.run()
 
 
