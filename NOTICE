@@ -1,0 +1,38 @@
+sketchvlm-plugin
+Copyright (c) 2026 MrBeanDev
+Licensed under the MIT License (see LICENSE).
+
+================================================================================
+Academic attribution
+================================================================================
+
+This plugin implements the technique described in the following paper, which
+is independently licensed under Creative Commons Attribution 4.0 International
+(CC BY 4.0). The paper is the source of the underlying method; this codebase
+is an independent implementation built from the paper.
+
+  SketchVLM: Vision Language Models Can Annotate Images to Explain Thoughts
+  and Guide Users
+  Brandon Collins, Logan Bolton, Hung Huy Nguyen, Mohammad Reza Taesiri,
+  Trung Bui, Anh Totti Nguyen.
+  arXiv:2604.22875, 2026.
+  https://arxiv.org/abs/2604.22875
+
+  @misc{collins2026sketchvlmvisionlanguagemodels,
+        title={SketchVLM: Vision language models can annotate images to
+               explain thoughts and guide users},
+        author={Brandon Collins and Logan Bolton and Hung Huy Nguyen and
+                Mohammad Reza Taesiri and Trung Bui and Anh Totti Nguyen},
+        year={2026},
+        eprint={2604.22875},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV},
+        url={https://arxiv.org/abs/2604.22875},
+  }
+
+The SketchVLM paper itself builds on prior work introducing the grid-anchored
+stroke-output prompting style:
+
+  SketchAgent: Language-Driven Sequential Sketch Generation
+  Yael Vinker et al.
+  https://sketch-agent.csail.mit.edu/
